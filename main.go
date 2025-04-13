@@ -28,7 +28,7 @@ func main() {
 	//logo
 	fmt.Println(" ▐ ▄ ▄▄▄ .▄▄▄▄▄ ▄▄▄·▪   ▐ ▄  ▄▄ • \n•█▌▐█▀▄.▀·•██  ▐█ ▄███ •█▌▐█▐█ ▀ ▪\n▐█▐▐▌▐▀▀▪▄ ▐█.▪ ██▀·▐█·▐█▐▐▌▄█ ▀█▄\n██▐█▌▐█▄▄▌ ▐█▌·▐█▪·•▐█▌██▐█▌▐█▄▪▐█\n▀▀ █▪ ▀▀▀  ▀▀▀ .▀   ▀▀▀▀▀ █▪·▀▀▀▀ ")
 	// Define input flags
-	targetFilePtr := flag.String("target-file", "", "Specify a file containing a list of IP addresses or networks (one per line)")
+	targetFilePtr := flag.String("target-file", "", "Specify a file containing a list of IP addresses, networks, or domains (one per line)")
 	outputFilePtr := flag.String("output-file", "alive-hosts.txt", "Specify the output file to save alive hosts")
 	verbosePtr := flag.Bool("verbose", false, "Enable verbose output to print results to the console")
 	flag.Parse()
@@ -80,8 +80,8 @@ func main() {
 			for ip := ipNet.IP.Mask(ipNet.Mask); ipNet.Contains(ip); incrementIP(ip) {
 				totalHosts++
 			}
-		} else if net.ParseIP(line) != nil {
-			// Count single IP
+		} else if net.ParseIP(line) != nil || isDomain(line) {
+			// Count single IP or domain
 			totalHosts++
 		}
 	}
@@ -112,7 +112,7 @@ func main() {
 			continue
 		}
 
-		// Check if the line is a valid IP or CIDR range
+		// Check if the line is a valid IP, CIDR range, or domain
 		if _, ipNet, err := net.ParseCIDR(line); err == nil {
 			// Handle CIDR range
 			for ip := ipNet.IP.Mask(ipNet.Mask); ipNet.Contains(ip); incrementIP(ip) {
@@ -135,8 +135,24 @@ func main() {
 				defer func() { <-sem }() // Release the semaphore slot
 				pingHost(ip, *verbosePtr, &aliveCount, &notAliveCount, &progressCount, outputWriter)
 			}(line)
+		} else if isDomain(line) {
+			// Handle domain
+			wg.Add(1)
+			sem <- struct{}{} // Acquire a semaphore slot
+			<-rateLimiter     // Rate limiting
+			go func(domain string) {
+				defer wg.Done()
+				defer func() { <-sem }() // Release the semaphore slot
+				ip := resolveDomain(domain)
+				if ip != "" {
+					pingHost(ip, *verbosePtr, &aliveCount, &notAliveCount, &progressCount, outputWriter)
+				} else {
+					atomic.AddInt32(&notAliveCount, 1)
+					atomic.AddInt32(&progressCount, 1)
+				}
+			}(line)
 		} else {
-			log.Printf("Invalid IP or CIDR range: %s\n", line)
+			log.Printf("Invalid IP, CIDR range, or domain: %s\n", line)
 		}
 	}
 
@@ -248,6 +264,26 @@ func isHostAlive(target string) bool {
 // Save alive host to the output file
 func saveToFile(writer *bufio.Writer, ip string) {
 	writer.WriteString(ip + "\n")
+}
+
+// Check if a string is a domain
+func isDomain(host string) bool {
+	return net.ParseIP(host) == nil && strings.Contains(host, ".")
+}
+
+// Resolve a domain to its IP address
+func resolveDomain(domain string) string {
+	ips, err := net.LookupIP(domain)
+	if err != nil {
+		log.Printf("Failed to resolve domain %s: %v\n", domain, err)
+		return ""
+	}
+	for _, ip := range ips {
+		if ip.To4() != nil { // Return the first IPv4 address
+			return ip.String()
+		}
+	}
+	return ""
 }
 
 // Ping a host and handle results
