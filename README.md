@@ -10,3 +10,10 @@
 ### golang tool that pings ip addresses, network ranges and domain names for large network host discovery.
 
 >PS > NetPing.exe -target-file targets.txt
+```
+targets.txt
+  8.8.8.8
+  1.1.1.1/32
+  192.168.1.0/24
+  marulecha.com
+```
