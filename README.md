@@ -11,7 +11,7 @@
 
 >PS > NetPing.exe -target-file targets.txt
 
-targets.txt accepted formats
+`targets.txt accepted formats`
 ```
 8.8.8.8
 1.1.1.1/32
