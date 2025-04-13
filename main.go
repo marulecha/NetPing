@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -16,12 +17,16 @@ import (
 )
 
 const (
-	maxRetries      = 3               // Number of retries for each host
-	concurrentLimit = 100             // Maximum number of concurrent goroutines
-	icmpTimeout     = 2 * time.Second // Timeout for ICMP requests
+	maxRetries      = 3                     // Number of retries for each host
+	concurrentLimit = 100                   // Maximum number of concurrent goroutines
+	icmpTimeout     = 2 * time.Second       // Timeout for ICMP requests
+	rateLimit       = 10 * time.Millisecond // 100 requests per second
 )
 
 func main() {
+
+	//logo
+	fmt.Println(" ▐ ▄ ▄▄▄ .▄▄▄▄▄ ▄▄▄·▪   ▐ ▄  ▄▄ • \n•█▌▐█▀▄.▀·•██  ▐█ ▄███ •█▌▐█▐█ ▀ ▪\n▐█▐▐▌▐▀▀▪▄ ▐█.▪ ██▀·▐█·▐█▐▐▌▄█ ▀█▄\n██▐█▌▐█▄▄▌ ▐█▌·▐█▪·•▐█▌██▐█▌▐█▄▪▐█\n▀▀ █▪ ▀▀▀  ▀▀▀ .▀   ▀▀▀▀▀ █▪·▀▀▀▀ ")
 	// Define input flags
 	targetFilePtr := flag.String("target-file", "", "Specify a file containing a list of IP addresses or networks (one per line)")
 	outputFilePtr := flag.String("output-file", "alive-hosts.txt", "Specify the output file to save alive hosts")
@@ -29,23 +34,20 @@ func main() {
 	flag.Parse()
 
 	if *targetFilePtr == "" {
-		fmt.Println("Error: -target-file flag is required")
-		return
+		log.Fatal("Error: -target-file flag is required")
 	}
 
 	// Open the target file
 	file, err := os.Open(*targetFilePtr)
 	if err != nil {
-		fmt.Printf("Error opening file '%s': %v\n", *targetFilePtr, err)
-		return
+		log.Fatalf("Error opening file '%s': %v\n", *targetFilePtr, err)
 	}
 	defer file.Close()
 
 	// Open the output file for writing
 	outputFile, err := os.Create(*outputFilePtr)
 	if err != nil {
-		fmt.Printf("Error creating output file '%s': %v\n", *outputFilePtr, err)
-		return
+		log.Fatalf("Error creating output file '%s': %v\n", *outputFilePtr, err)
 	}
 	defer outputFile.Close()
 	outputWriter := bufio.NewWriter(outputFile)
@@ -61,6 +63,9 @@ func main() {
 
 	// Use a semaphore to limit the number of concurrent goroutines
 	sem := make(chan struct{}, concurrentLimit)
+
+	// Rate limiter
+	rateLimiter := time.Tick(rateLimit)
 
 	// Calculate the total number of hosts
 	scanner := bufio.NewScanner(file)
@@ -88,10 +93,14 @@ func main() {
 	// Start a goroutine to periodically print progress if verbose is disabled
 	if !*verbosePtr {
 		go func() {
+			var lastProgress int32
 			for {
-				time.Sleep(1 * time.Second)
+				time.Sleep(500 * time.Millisecond)
 				currentProgress := atomic.LoadInt32(&progressCount)
-				fmt.Printf("\rPinging: %d/%d hosts", currentProgress, totalHosts)
+				if currentProgress != lastProgress {
+					fmt.Printf("\rPinging: %d/%d hosts", currentProgress, totalHosts)
+					lastProgress = currentProgress
+				}
 			}
 		}()
 	}
@@ -109,54 +118,31 @@ func main() {
 			for ip := ipNet.IP.Mask(ipNet.Mask); ipNet.Contains(ip); incrementIP(ip) {
 				wg.Add(1)
 				sem <- struct{}{} // Acquire a semaphore slot
+				<-rateLimiter     // Rate limiting
 				go func(ip string) {
 					defer wg.Done()
 					defer func() { <-sem }() // Release the semaphore slot
-					if isHostAliveWithRetries(ip) {
-						atomic.AddInt32(&aliveCount, 1)
-						if *verbosePtr {
-							fmt.Printf("Host %s is alive\n", ip)
-						}
-						saveToFile(outputWriter, ip)
-					} else {
-						atomic.AddInt32(&notAliveCount, 1)
-						if *verbosePtr {
-							fmt.Printf("Host %s is not alive\n", ip)
-						}
-					}
-					atomic.AddInt32(&progressCount, 1) // Increment progress counter
+					pingHost(ip, *verbosePtr, &aliveCount, &notAliveCount, &progressCount, outputWriter)
 				}(ip.String())
 			}
 		} else if net.ParseIP(line) != nil {
-			// Handle single IP address
+			// Handle single IP
 			wg.Add(1)
 			sem <- struct{}{} // Acquire a semaphore slot
+			<-rateLimiter     // Rate limiting
 			go func(ip string) {
 				defer wg.Done()
 				defer func() { <-sem }() // Release the semaphore slot
-				if isHostAliveWithRetries(ip) {
-					atomic.AddInt32(&aliveCount, 1)
-					if *verbosePtr {
-						fmt.Printf("Host %s is alive\n", ip)
-					}
-					saveToFile(outputWriter, ip)
-				} else {
-					atomic.AddInt32(&notAliveCount, 1)
-					if *verbosePtr {
-						fmt.Printf("Host %s is not alive\n", ip)
-					}
-				}
-				atomic.AddInt32(&progressCount, 1) // Increment progress counter
+				pingHost(ip, *verbosePtr, &aliveCount, &notAliveCount, &progressCount, outputWriter)
 			}(line)
 		} else {
-			fmt.Printf("Invalid IP or CIDR range: %s\n", line)
+			log.Printf("Invalid IP or CIDR range: %s\n", line)
 		}
 	}
 
 	// Check for errors while reading the file
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading file '%s': %v\n", *targetFilePtr, err)
-		return
+		log.Fatalf("Error reading file '%s': %v\n", *targetFilePtr, err)
 	}
 
 	// Wait for all goroutines to complete
@@ -168,7 +154,7 @@ func main() {
 	// Print the results
 	fmt.Printf("\nPing scan completed.\n")
 	fmt.Printf("Alive hosts: %d\n", aliveCount)
-	fmt.Printf("Not alive hosts: %d\n", notAliveCount)
+	fmt.Printf("Offline hosts: %d\n", notAliveCount)
 }
 
 // Increment an IP address
@@ -196,7 +182,7 @@ func isHostAliveWithRetries(target string) bool {
 func isHostAlive(target string) bool {
 	conn, err := icmp.ListenPacket("ip4:icmp", "")
 	if err != nil {
-		fmt.Printf("Error creating ICMP connection: %v\n", err)
+		log.Printf("Error creating ICMP connection: %v\n", err)
 		return false
 	}
 	defer conn.Close()
@@ -211,18 +197,18 @@ func isHostAlive(target string) bool {
 	}
 	msgBytes, err := msg.Marshal(nil)
 	if err != nil {
-		fmt.Printf("Error marshaling ICMP message: %v\n", err)
+		log.Printf("Error marshaling ICMP message: %v\n", err)
 		return false
 	}
 
 	// Send ICMP request
 	targetIP := net.ParseIP(target)
 	if targetIP == nil {
-		fmt.Printf("Invalid target IP: %s\n", target)
+		log.Printf("Invalid target IP: %s\n", target)
 		return false
 	}
 	if _, err := conn.WriteTo(msgBytes, &net.IPAddr{IP: targetIP}); err != nil {
-		fmt.Printf("Error sending ICMP request to %s: %v\n", target, err)
+		log.Printf("Error sending ICMP request to %s: %v\n", target, err)
 		return false
 	}
 
@@ -262,4 +248,21 @@ func isHostAlive(target string) bool {
 // Save alive host to the output file
 func saveToFile(writer *bufio.Writer, ip string) {
 	writer.WriteString(ip + "\n")
+}
+
+// Ping a host and handle results
+func pingHost(ip string, verbose bool, aliveCount, notAliveCount, progressCount *int32, writer *bufio.Writer) {
+	if isHostAliveWithRetries(ip) {
+		atomic.AddInt32(aliveCount, 1)
+		if verbose {
+			fmt.Printf("Host %s is alive\n", ip)
+		}
+		saveToFile(writer, ip)
+	} else {
+		atomic.AddInt32(notAliveCount, 1)
+		if verbose {
+			fmt.Printf("Host %s is not alive\n", ip)
+		}
+	}
+	atomic.AddInt32(progressCount, 1)
 }
