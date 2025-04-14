@@ -1,5 +1,3 @@
-# NetPing
-
 ```
  ▐ ▄ ▄▄▄ .▄▄▄▄▄ ▄▄▄·▪   ▐ ▄  ▄▄ • 
 •█▌▐█▀▄.▀·•██  ▐█ ▄███ •█▌▐█▐█ ▀ ▪
@@ -7,6 +5,7 @@
 ██▐█▌▐█▄▄▌ ▐█▌·▐█▪·•▐█▌██▐█▌▐█▄▪▐█
 ▀▀ █▪ ▀▀▀  ▀▀▀ .▀   ▀▀▀▀▀ █▪·▀▀▀▀
 ```
+# NetPing
 golang tool that pings ip addresses, network ranges and domain names for large network host discovery.\
 alive hosts are saved in the output-file "alive-hosts.txt".
 
