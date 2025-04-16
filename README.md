@@ -9,7 +9,6 @@
 golang tool that pings ip addresses, network ranges and domain names for large network host discovery.\
 alive hosts are saved in the output-file "alive-hosts.txt".
 
-### Rerun for validation, due to the fact that some pings may be blocked in a Production environment.
 >PS > NetPing.exe -target-file targets.txt
 
 `targets.txt` `accepted formats`
@@ -19,3 +18,5 @@ alive hosts are saved in the output-file "alive-hosts.txt".
 192.168.1.0/24
 marulecha.com
 ```
+
+### Rerun for validation, due to the fact that some pings may be blocked in a Production environment.
